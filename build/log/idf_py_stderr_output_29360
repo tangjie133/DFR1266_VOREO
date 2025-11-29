@@ -1,0 +1,15 @@
+Command: cmake -G Ninja -DPYTHON_DEPS_CHECKED=1 -DPYTHON=D:\Espressif\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe -DESP_PLATFORM=1 -DCCACHE_ENABLE=1 C:\Users\13348\Desktop\DFR1266\DFR1266_VOREO
+CMake Error at D:/Espressif/frameworks/esp-idf-v5.5.1/tools/cmake/build.cmake:629 (message):
+  ERROR: Because espressif/esp-sr (2.2.1) depends on espressif/esp-dsp
+  (1.6.0)
+
+   and no versions of espressif/esp-sr match >2.2.1,<3.0.0, espressif/esp-sr (>=2.2.1,<3.0.0) requires espressif/esp-dsp (1.6.0).
+
+  So, because project depends on both espressif/esp-dsp (^1.7.0) and
+  espressif/esp-sr (^2.2.1), version solving failed.
+
+Call Stack (most recent call first):
+  D:/Espressif/frameworks/esp-idf-v5.5.1/tools/cmake/project.cmake:740 (idf_build_process)
+  CMakeLists.txt:6 (project)
+
+
