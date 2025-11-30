@@ -97,7 +97,7 @@ static int i2sInit(uint8_t port, codec_i2s_pin_t *i2s_pin, i2s_clock_src_t clk_s
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(16, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(32, I2S_SLOT_MODE_STEREO),
         .gpio_cfg ={
             .mclk = i2s_pin ? i2s_pin->mclk : I2S_MCK_PIN,
             .bclk = i2s_pin ? i2s_pin->bclk : I2S_BCK_PIN,
@@ -116,7 +116,7 @@ static int i2sInit(uint8_t port, codec_i2s_pin_t *i2s_pin, i2s_clock_src_t clk_s
 #if SOC_I2S_SUPPORTS_TDM
     i2s_tdm_slot_mask_t slot_mask = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3;
     i2s_tdm_config_t tdm_cfg = {
-        .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(16, I2S_SLOT_MODE_STEREO, slot_mask),
+        .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(32, I2S_SLOT_MODE_STEREO, slot_mask),
         .clk_cfg  = I2S_TDM_CLK_DEFAULT_CONFIG(16000),
         .gpio_cfg = {
             .mclk = i2s_pin ? i2s_pin->mclk : I2S_MCK_PIN,
@@ -215,7 +215,7 @@ int initAudio(esp_codec_dev_handle_t *record_dev){
     // New input codec interface
     es7210_codec_cfg_t es7210_cfg = {
         .ctrl_if = in_ctrl_if,
-        .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3|ES7210_SEL_MIC4,
+        .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4,
     };
     const audio_codec_if_t *in_codec_if = es7210_codec_new(&es7210_cfg);
     if (in_codec_if == NULL){

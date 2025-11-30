@@ -39,13 +39,13 @@ void initMIC(void)
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = 16000,
         .channel = 2,
-        .bits_per_sample = 16,
+        .bits_per_sample = 32,
     };
 #elif ES7210
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = 16000,
         .channel = 4,
-        .bits_per_sample = 16,
+        .bits_per_sample = 32,
     };
 #endif
     ret = esp_codec_dev_open(record_dev, &fs);
@@ -62,24 +62,45 @@ void feed_Task(void *arg)
     esp_afe_sr_data_t *afe_data = arg;
     int audio_chunksize = afe_handle->get_feed_chunksize(afe_data);
     int nch = afe_handle->get_feed_channel_num(afe_data);
-    ESP_LOGI(TAG, "Feed channel number: %d", nch);
+    ESP_LOGI(TAG, "Feed channel number: %d", audio_chunksize);
 #ifdef ES7243E
     int feed_channel = 2;
 #elif ES7210
     int feed_channel = 4;
 #endif
     assert(nch == feed_channel);
-    int16_t *i2s_buff = malloc(audio_chunksize * sizeof(int16_t) * feed_channel);
-    assert(i2s_buff);
+    // Buffer for reading 32-bit data from codec
+    int32_t *i2s_buff_32 = malloc(audio_chunksize * sizeof(int32_t) * feed_channel);
+    assert(i2s_buff_32);
+    // Buffer for 16-bit data to feed AFE
+    int16_t *i2s_buff_16 = malloc(audio_chunksize * sizeof(int16_t) * feed_channel);
+    assert(i2s_buff_16);
 
     while (1) {
-        esp_codec_dev_read(record_dev, i2s_buff, audio_chunksize * sizeof(int16_t) * feed_channel);
-        afe_handle->feed(afe_data, i2s_buff);
+        // Read 32-bit audio data from codec
+        esp_codec_dev_read(record_dev, i2s_buff_32, audio_chunksize * sizeof(int32_t) * feed_channel);
+        
+        // Convert 32-bit to 16-bit: extract valid bits (31:8) and shift right by 14 bits
+        // This extracts bits 31:14 which contains the valid audio data
+        // Data format: bits 31:8 are valid, bits 7:0 are zero
+        int total_samples = audio_chunksize * feed_channel;
+        for (int i = 0; i < total_samples; i++) {
+            // Extract valid data bits and convert to 16-bit
+            // Right shift 14 bits to get 16-bit signed value (bits 31:14 -> 15:0)
+            i2s_buff_16[i] = (int16_t)(i2s_buff_32[i] >> 14);
+        }
+        
+        // Feed 16-bit data to AFE (AFE requires int16_t*)
+        afe_handle->feed(afe_data, i2s_buff_16);
         vTaskDelay(1);
     }
-    if (i2s_buff) {
-        free(i2s_buff);
-        i2s_buff = NULL;
+    if (i2s_buff_32) {
+        free(i2s_buff_32);
+        i2s_buff_32 = NULL;
+    }
+    if (i2s_buff_16) {
+        free(i2s_buff_16);
+        i2s_buff_16 = NULL;
     }
     vTaskDelete(NULL);
 }
