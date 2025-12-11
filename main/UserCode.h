@@ -1,36 +1,38 @@
 #ifndef USER_CODE_H
 #define USER_CODE_H
 
+#define SAMPLE_RATE     16000
+#define FRAME_SIZE 1024
+#define CHANNELS 4
+
+#define HOP_SIZE        512       // hop size (FRAME_SIZE/2 => 50% overlap)
+#define MICRO_SIDE_M    0.05f     // square side length (50mm)
+#define MICRO_RADIUS    (MICRO_SIDE_M / 2.0f * sqrtf(2.0f) / 2.0f) // not used directly
+#define SPEED_OF_SOUND  343.0f
+
+#define VAD_ENERGY_TH   1e-6f     // frame energy threshold to enable processing
+
+/* Kalman parameters for angle smoothing */
+#define KALMAN_Q_ANGLE  0.001f
+#define KALMAN_Q_RATE   0.01f
+#define KALMAN_R_MEAS   2.0f  
+
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief Feed audio data task
- * 
- * This task reads audio data from the codec device and feeds it to the AFE (Audio Front-End)
- * for processing. It runs continuously to maintain audio streaming.
- * 
- * @param arg Pointer to esp_afe_sr_data_t structure
- */
-void feed_Task(void *arg);
-
-/**
- * @brief Detect wake word and speech recognition task
- * 
- * This task fetches processed audio data from AFE and detects wake words.
- * When a wake word is detected, it triggers speech recognition processing.
- * 
- * @param arg Pointer to esp_afe_sr_data_t structure
- */
-void detect_Task(void *arg);
 
 //初始化麦克风
 void initMIC(void);
 
 //初始化语音识别
 void initSpeechRecog(void);
+
+void initAudioDoa(void);
+
+void autodetect_slot_mapping(void);
+
 
 #ifdef __cplusplus
 }

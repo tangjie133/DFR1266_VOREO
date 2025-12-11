@@ -32,19 +32,21 @@
 
 static i2s_comm_mode_t i2s_in_mode = I2S_COMM_MODE_STD;
 static i2s_comm_mode_t i2s_out_mode = I2S_COMM_MODE_STD;
-#elif ES7210
+#endif
 
-#define ES7210_ADDR     (0x22)
-#define I2C_SDA_PIN      (10)
-#define I2C_SCL_PIN      (11)
+#ifdef ES7210
 
-#define I2S_BCK_PIN      (6)
-#define I2S_MCK_PIN      (5)
-#define I2S_DATA_IN_PIN  (8)
+#define ES7210_ADDR     (0x84)
+#define I2C_SDA_PIN      (11)
+#define I2C_SCL_PIN      (10)
+
+#define I2S_BCK_PIN      (5)
+#define I2S_MCK_PIN      (6)
+#define I2S_DATA_IN_PIN  (3)
 #define I2S_DATA_OUT_PIN (-1)
-#define I2S_DATA_WS_PIN  (7)
+#define I2S_DATA_WS_PIN  (4)
 static i2s_comm_mode_t i2s_in_mode = I2S_COMM_MODE_TDM;
-static i2s_comm_mode_t i2s_out_mode = I2S_COMM_MODE_STD;
+static i2s_comm_mode_t i2s_out_mode = I2S_COMM_MODE_NONE;
 
 #endif
 
@@ -116,7 +118,7 @@ static int i2sInit(uint8_t port, codec_i2s_pin_t *i2s_pin, i2s_clock_src_t clk_s
 #if SOC_I2S_SUPPORTS_TDM
     i2s_tdm_slot_mask_t slot_mask = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3;
     i2s_tdm_config_t tdm_cfg = {
-        .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(32, I2S_SLOT_MODE_STEREO, slot_mask),
+        .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(32, I2S_SLOT_MODE_MONO, slot_mask),
         .clk_cfg  = I2S_TDM_CLK_DEFAULT_CONFIG(16000),
         .gpio_cfg = {
             .mclk = i2s_pin ? i2s_pin->mclk : I2S_MCK_PIN,
@@ -128,6 +130,7 @@ static int i2sInit(uint8_t port, codec_i2s_pin_t *i2s_pin, i2s_clock_src_t clk_s
     };
     tdm_cfg.slot_cfg.total_slot = 4;
     tdm_cfg.clk_cfg.clk_src = clk_src;
+    tdm_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_384;
 #endif
 
     int ret = i2s_new_channel(&chan_cfg,
@@ -184,7 +187,7 @@ int initAudio(esp_codec_dev_handle_t *record_dev){
     ESP_ERROR_CHECK(ret);
     audio_codec_i2s_cfg_t i2s_cfg = {
         .rx_handle = i2s_keep[0]->rx_handle,
-        .tx_handle = i2s_keep[0]->tx_handle,
+        .tx_handle = NULL,
     };
 
     const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_cfg);
@@ -192,15 +195,22 @@ int initAudio(esp_codec_dev_handle_t *record_dev){
         ESP_LOGE(TAG, "audio_codec_new_i2s_data ERROR");
         return ESP_FAIL;
     }
-
+    #ifdef ES7243E
     audio_codec_i2c_cfg_t i2c_cfg = {.addr = ES7243E_ADDR,
                                      .bus_handle = i2c_bus_handle};
+    #endif
+    #ifdef ES7210
+    audio_codec_i2c_cfg_t i2c_cfg = {.addr = ES7210_ADDR,
+                                     .bus_handle = i2c_bus_handle};
+    #endif
 
     const audio_codec_ctrl_if_t *in_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
+
     if (in_ctrl_if == NULL){
         ESP_LOGE(TAG, "audio_codec_new_i2c_ctrl ERROR");
         return ESP_FAIL;
     }
+
     #ifdef ES7243E
     // New input codec interface
     es7243e_codec_cfg_t es7243e_cfg = {
@@ -211,7 +221,8 @@ int initAudio(esp_codec_dev_handle_t *record_dev){
         ESP_LOGE(TAG, "es7243e_codec_new ERROR");
         return ESP_FAIL;
     }
-    #elif ES7210
+    #endif
+    #ifdef ES7210
     // New input codec interface
     es7210_codec_cfg_t es7210_cfg = {
         .ctrl_if = in_ctrl_if,
@@ -235,9 +246,7 @@ int initAudio(esp_codec_dev_handle_t *record_dev){
         ESP_LOGE(TAG, "esp_codec_dev_new ERROR");
         return ESP_FAIL;
     }
-    
-    ret = esp_codec_dev_set_in_gain(*record_dev, 30.0);
-    ESP_ERROR_CHECK(ret);
+
 
     return ret;
 }
