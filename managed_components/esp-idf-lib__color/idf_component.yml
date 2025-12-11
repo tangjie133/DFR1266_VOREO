@@ -1,0 +1,28 @@
+dependencies:
+  esp-idf-lib/lib8tion:
+    version: '*'
+description: Common library for RGB and HSV colors
+discussion: https://github.com/esp-idf-lib/core/discussions
+documentation: https://esp-idf-lib.github.io/color/
+files:
+  exclude:
+  - docs/**/*
+issues: https://github.com/esp-idf-lib/color/issues
+license: MIT
+maintainers:
+- Ruslan V. Uss (@UncleRus) <unclerus@gmail.com>
+repository: git://github.com/esp-idf-lib/color.git
+repository_info:
+  commit_sha: f5df73068f1d851ea8c122d7cf852ee7dbae48ed
+  path: .
+targets:
+- esp32
+- esp32c3
+- esp32c5
+- esp32c6
+- esp32h2
+- esp32p4
+- esp32s2
+- esp32s3
+url: https://github.com/esp-idf-lib/core
+version: 1.0.7
