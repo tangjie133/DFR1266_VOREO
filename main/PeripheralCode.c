@@ -27,6 +27,7 @@ static gat_data_list_t *gatDataList = NULL;
 
 static int commMode = UART_MODE;
 static i2c_slave_dev_handle_t slave_handle;
+extern float angle;
 
 // GAT解析状态机状态（需要保持跨函数调用）
 static struct {
@@ -53,7 +54,7 @@ static led_strip_t strip =
     .gpio = RGB_GPIO,
     .buf = NULL,
 #ifdef LED_STRIP_BRIGHTNESS
-    .brightness = 255,
+    .brightness = 100,
 #endif
 };
 
@@ -68,12 +69,13 @@ static uint16_t calculateCRC16(const uint8_t *data, size_t len)
     uint16_t crc = CRC16_INITIAL_VALUE;
     
     for (size_t i = 0; i < len; i++) {
-        crc ^= (uint16_t)(data[i] << 8);
+        // 先转换为uint16_t再左移，避免符号扩展问题
+        crc ^= ((uint16_t)data[i]) << 8;
         for (int j = 0; j < 8; j++) {
             if (crc & 0x8000) {
-                crc = (crc << 1) ^ CRC16_POLYNOMIAL;
+                crc = ((crc << 1) ^ CRC16_POLYNOMIAL) & 0xFFFF;
             } else {
-                crc <<= 1;
+                crc = (crc << 1) & 0xFFFF;
             }
         }
     }
@@ -85,13 +87,14 @@ static void sendBuf(uint8_t *data, size_t len, uint8_t cmd)
 {
     uint8_t buf[len + 6];
     buf[0] = USER_UART_CMD_HEAD;
-    buf[1] = (len << 8) & 0xff;
+    buf[1] = (len  << 8) & 0xff;
     buf[2] = len & 0xff;    
     buf[3] = cmd;
     memcpy(buf + 4, data, len);
     uint16_t crc = calculateCRC16(buf, len + 4);
-    buf[len + 4] = crc >> 8;
-    buf[len + 5] = crc & 0xFF;
+    buf[len + 4] = (uint8_t)(crc >> 8);
+    buf[len + 5] = (uint8_t)(crc & 0xFF);
+    //ESP_LOGW(TAG, "CRC: 0x%02X", crc);
     if(commMode == UART_MODE){
         uart_write_bytes(USERUART_PORT, buf, len + 6);
     }else if(commMode == I2C_MODE){
@@ -101,6 +104,7 @@ static void sendBuf(uint8_t *data, size_t len, uint8_t cmd)
 
 static void userParseData(const uint8_t *data, size_t len)
 {
+    uint8_t sendData = 0;
     if (!data || len == 0) {
         ESP_LOGW(TAG, "Invalid USER data: NULL pointer or zero length");
         return;
@@ -125,27 +129,133 @@ static void userParseData(const uint8_t *data, size_t len)
                 case USER_UART_CMD_QUERY_TEXT:
                     ESP_LOGI(TAG, "USER query text command received");
                     userParseState.cmdState = USER_UART_CMD_HEAD;
-                    uint8_t sendData = 0;
-                    if(gatDataListGetCount(gatDataList) > 0){
-                        sendData = 1;
+                    
+                    // 检查是否有完整的USER_UART_CMD_SEND_TEXT节点
+                    sendData = 0;
+                    if (gatDataList) {
+                        gat_data_node_t *current = gatDataList->head;
+                        while (current) {
+                            if (current->cmd == USER_UART_CMD_SEND_TEXT && 
+                                gatDataNodeIsComplete(current) && 
+                                current->data && 
+                                current->received_len > 0) {
+                                sendData = 1;
+                                break;
+                            }
+                            current = current->next;
+                        }
                     }
                     sendBuf(&sendData, 1, USER_UART_CMD_QUERY_TEXT);
                     break;
                 case USER_UART_CMD_GET_TEXT:
                     ESP_LOGI(TAG, "USER get text command received");
                     userParseState.cmdState = USER_UART_CMD_HEAD;
+                    // 从链表中查找完整的USER_UART_CMD_SEND_TEXT节点
+                    if (gatDataList) {
+                        gat_data_node_t *node = NULL;
+                        // 遍历链表查找USER_UART_CMD_SEND_TEXT命令的完整节点
+                        gat_data_node_t *current = gatDataList->head;
+                        while (current) {
+                            if (current->cmd == USER_UART_CMD_SEND_TEXT && 
+                                gatDataNodeIsComplete(current) && 
+                                current->data && 
+                                current->received_len > 0) {
+                                node = current;
+                                break;
+                            }
+                            current = current->next;
+                        }
+                        
+                        if (node) {
+                            // 发送数据（sendBuf会自动添加包头和CRC16）
+                            sendBuf(node->data, node->received_len, USER_UART_CMD_GET_TEXT);
+                            ESP_LOGI(TAG, "Sent text data, length: %d", node->received_len);
+                            // 从链表中移除已发送的节点（gatDataListRemove内部会释放节点）
+                            gatDataListRemove(gatDataList, node);
+                        } else {
+                            // 没有可用的文本数据，发送空数据
+                            uint8_t emptyData[1] = {0};
+                            sendBuf(emptyData, 1, USER_UART_CMD_GET_TEXT);
+                            ESP_LOGW(TAG, "No text data available to send");
+                        }
+                    } else {
+                        // 链表未初始化，发送空数据
+                        uint8_t emptyData[1] = {0};
+                        sendBuf(emptyData, 1, USER_UART_CMD_GET_TEXT);
+                        ESP_LOGE(TAG, "GAT data list not initialized");
+                    }
                     break;
                 case USER_UART_CMD_SEND_TEXT:
-                    ESP_LOGI(TAG, "USER send text command received");
-                    userParseState.cmdState = USER_UART_CMD_HEAD;
+                    ESP_LOGI(TAG, "USER send text command received, expected data length: %d", userParseState.dataLen);
+                    // 如果有数据需要接收，创建节点并进入数据接收状态
+                    if (userParseState.dataLen > 0) {
+                        if (gatDataList) {
+                            gat_data_node_t *node = gatDataNodeCreate(USER_UART_CMD_SEND_TEXT, userParseState.dataLen);
+                            if (node) {
+                                gatDataListAdd(gatDataList, node);
+                                userParseState.cmdState = USER_UART_CMD_DATA;
+                                ESP_LOGI(TAG, "Created USER text data node, expected length: %d", userParseState.dataLen);
+                            } else {
+                                ESP_LOGE(TAG, "Failed to create USER text data node, reset state");
+                                userParseState.cmdState = USER_UART_CMD_HEAD;
+                                userParseState.dataLen = 0;
+                            }
+                        } else {
+                            ESP_LOGE(TAG, "GAT data list not initialized, reset state");
+                            userParseState.cmdState = USER_UART_CMD_HEAD;
+                            userParseState.dataLen = 0;
+                        }
+                    } else {
+                        // 没有数据，直接返回
+                        ESP_LOGW(TAG, "USER send text command with zero data length");
+                        userParseState.cmdState = USER_UART_CMD_HEAD;
+                    }
                     break;
                 case USER_UART_CMD_ANGLE:
+                    userParseState.cmdState = USER_UART_CMD_HEAD;   
+                    uint8_t sendBufData[2];
+                    sendBufData[0] = ((uint16_t)angle >> 8) & 0xff;
+                    sendBufData[1] = ((uint16_t)angle & 0xff);
+                    sendBuf(sendBufData, 2, USER_UART_CMD_ANGLE);   
+                    break;
+                case USER_UART_CMD_BEGIN:
+                    ESP_LOGI(TAG, "USER begin command received");
                     userParseState.cmdState = USER_UART_CMD_HEAD;
+                    sendData = 1;
+                    sendBuf(&sendData, 1, USER_UART_CMD_BEGIN);
                     break;
                 default:
                     ESP_LOGW(TAG, "Unknown USER command received: 0x%02X, reset state", data[i]);
                     userParseState.cmdState = USER_UART_CMD_HEAD;
                     break;
+            }
+        } else if(userParseState.cmdState == USER_UART_CMD_DATA){
+            // 接收文本数据并存储到节点中
+            if (gatDataList) {
+                gat_data_node_t *node = gatDataListGetIncomplete(gatDataList);
+                if (node && node->cmd == USER_UART_CMD_SEND_TEXT) {
+                    int appended = gatDataNodeAppend(node, &data[i], 1);
+                    if (appended > 0) {
+                        if (gatDataNodeIsComplete(node)) {
+                            ESP_LOGI(TAG, "USER text data packet complete, total length: %d", node->received_len);
+                            userParseState.cmdState = USER_UART_CMD_HEAD;
+                            userParseState.dataLen = 0;
+                        }
+                        // 如果数据未完成，继续保持在DATA状态
+                    } else {
+                        ESP_LOGW(TAG, "Failed to append data to USER text node, reset state");
+                        userParseState.cmdState = USER_UART_CMD_HEAD;
+                        userParseState.dataLen = 0;
+                    }
+                } else {
+                    ESP_LOGW(TAG, "No incomplete USER text node found, reset state");
+                    userParseState.cmdState = USER_UART_CMD_HEAD;
+                    userParseState.dataLen = 0;
+                }
+            } else {
+                ESP_LOGW(TAG, "GAT data list not initialized, reset state");
+                userParseState.cmdState = USER_UART_CMD_HEAD;
+                userParseState.dataLen = 0;
             }
         }
     }
@@ -568,7 +678,7 @@ int peripheralInit(void)
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,      // 不使用中断
         .mode = GPIO_MODE_INPUT,             // 输入模式
-        .pin_bit_mask = (1ULL << MODE_GPIO),
+        .pin_bit_mask = (1ULL << MODE_GPIO)|(1ULL << GAT_VDD_EN_GPIO)|(1ULL << GAT_RESET_GPIO)|(1ULL << GAT_SPI0_DO_GPIO),
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en = GPIO_PULLUP_ENABLE     // 启动内部上拉（适合按键）
     };
@@ -595,7 +705,7 @@ int peripheralInit(void)
         uart_set_pin(USERUART_PORT, USERUART_TX_SDA_GPIO, USERUART_RX_SCL_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
         ESP_LOGI(TAG, "USERUART_PORT is initialized");
     }
-    xTaskCreate(userUartTask, "userUartTask", 8*1024, NULL, 10, NULL);
+    xTaskCreate(userUartTask, "userUartTask", 8*1024, NULL, 5, NULL);
     return ret;
 }
 

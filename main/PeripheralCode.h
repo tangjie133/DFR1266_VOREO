@@ -5,15 +5,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "rgb.h"
+#include "UserConfig.h"
+#include "UserCode.h"
 
-#define RGB_GPIO                        9 //RGB指示灯引脚
-#define MODE_GPIO                       21 //通信模式选择按键引脚
 
-#define GAT_WAKEUP_INT_GPIO             47 //GAT唤醒引脚
-#define GAT_VDD_EN_GPIO                 7 //GAT电源使能引脚
-#define GAT_RESET_GPIO                  45 //GAT复位引脚
-#define GAT_SPI0_DO_GPIO                12 //GATSPI0数据输出引脚
-#define GAT_WAKEUP_GPIO                 8 
 
 #define UART_MODE                       0
 #define I2C_MODE                        1
@@ -24,16 +19,7 @@
 #define RGB_YELLOW                      rgb_from_code(0xffff00)
 
 
-#define USERUART_PORT                   UART_NUM_2
-#define USERUART_TX_SDA_GPIO            1//14
-#define USERUART_RX_SCL_GPIO            2//13
 
-#define GTA_UART_PORT                   UART_NUM_1
-#define GTA_UART_TX_GPIO                38
-#define GTA_UART_RX_GPIO                39
-
-#define UART_BAUDRATE                   115200
-#define UART_BUF_SIZE                   1024
 #define UART_READ_BUF_SIZE              1024
 #define UART_DATA_BITS                  UART_DATA_8_BITS
 #define UART_STOP_BITS                  UART_STOP_BITS_1
@@ -41,8 +27,7 @@
 #define UART_FLOW_CTRL                  UART_HW_FLOWCTRL_DISABLE
 #define UART_SOURCE_CLK                 UART_SCLK_DEFAULT
 
-#define USERI2C_ADDRESS                 0x1f
-#define I2C_SLAVE_NUM                   I2C_NUM_1
+
 
 #define GAT_UART_CMD_HEAD0               (0)
 #define GAT_UART_CMD_HEAD1               (1)
@@ -50,7 +35,8 @@
 #define UART_CMD_LEN_H                   (3)
 #define UART_CMD_LEN_L                   (4)
 #define GAT_UART_CMD_DATA                (5)
-#define GAT_UART_CMD_END                 (5)
+#define GAT_UART_CMD_END                  (6)
+#define USER_UART_CMD_DATA                (7)
 
 #define GAT_CMD_HEAD0                    (0xFD)  //头0
 #define GAT_CMD_HEAD1                    (0x00)  //头1
@@ -62,6 +48,8 @@
 
 
 #define USER_UART_CMD_HEAD               (0x55)
+#define USER_UART_CMD_END                (0xFF)
+#define USER_UART_CMD_BEGIN              (0x00) //握手命令
 #define USER_UART_CMD_QUERY_TEXT         (0x01) //查询文本命令
 #define USER_UART_CMD_GET_TEXT           (0x02) //获取文本命令
 #define USER_UART_CMD_SEND_TEXT          (0x03) //发送文本命令

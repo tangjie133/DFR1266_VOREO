@@ -62,6 +62,8 @@ static float hann_win[FRAME_SIZE];
 // 如左右或前后颠倒，可尝试 {1,0,2,3} 或 {0,2,1,3}
 static int slot2mic[CHANNELS] = {0,2,1,3};
 
+float angle = 0.0f;
+
 void initMIC(void)
 {
     int ret = initAudio(&record_dev);
@@ -651,9 +653,10 @@ static void process_one_frame() {
     float norm_y = tau_y_f / max_tau;
     float az = atan2f(norm_y, norm_x) * 180.0f / M_PI; // 0度指向 +x
     if (az < 0) az += 360.0f;
+    angle = az;
 
-    ESP_LOGI(TAG, "DOA az=%.1f deg  tau_x=%.2fus tau_y=%.2fus  energy=%.3e",
-             az, tau_x*1e6f, tau_y*1e6f, total_e);
+    ESP_LOGI(TAG, "DOA angle=%.1f deg  tau_x=%.2fus tau_y=%.2fus  energy=%.3e",
+        angle, tau_x*1e6f, tau_y*1e6f, total_e);
 }
 
 void audio_doa_task(void *arg)
@@ -685,7 +688,7 @@ void audio_doa_task(void *arg)
         esp_codec_dev_read(record_dev, raw_i2s_buf, bytes_to_read);
         process_one_frame();
 
-        vTaskDelay(100);
+        vTaskDelay(50);
     }
     vTaskDelete(NULL);
 }
@@ -702,7 +705,8 @@ void initAudioDoa(void)
     //     ESP_LOGE(TAG, "Failed to create audio queue");
     //     return;
     // }
-    xTaskCreatePinnedToCore(audio_doa_task, "audio_doa", 8 * 1024, NULL, 5, NULL, 0);
+    //xTaskCreatePinnedToCore(audio_doa_task, "audio_doa", 8 * 1024, NULL, 5, NULL, 0);
+    xTaskCreate(audio_doa_task, "audio_doa_task", 8*1024, NULL, 5, NULL);
 }
 
 

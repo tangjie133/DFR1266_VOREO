@@ -17,6 +17,7 @@
 #define KALMAN_Q_RATE   0.01f
 #define KALMAN_R_MEAS   2.0f  
 
+extern float angle;
 
 #ifdef __cplusplus
 extern "C" {
