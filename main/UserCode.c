@@ -64,6 +64,9 @@ static int slot2mic[CHANNELS] = {0,2,1,3};
 
 float angle = 0.0f;
 
+/**
+ * @brief 初始化麦克风（音频编解码器）
+ */
 void initMIC(void)
 {
     int ret = initAudio(&record_dev);
@@ -105,7 +108,11 @@ void initMIC(void)
 }
 
 
-void feed_Task(void *arg)
+/**
+ * @brief 音频数据采集任务（向AFE喂数据）
+ * @param arg AFE数据结构指针
+ */
+void feedTask(void *arg)
 {
     esp_afe_sr_data_t *afe_data = arg;
     int audio_chunksize = afe_handle->get_feed_chunksize(afe_data);
@@ -172,7 +179,11 @@ void feed_Task(void *arg)
     vTaskDelete(NULL);
 }
 
-void detect_Task(void *arg)
+/**
+ * @brief 语音检测任务（唤醒词检测）
+ * @param arg AFE数据结构指针
+ */
+void detectTask(void *arg)
 {
     esp_afe_sr_data_t *afe_data = arg;
     int afe_chunksize = afe_handle->get_fetch_chunksize(afe_data);
@@ -239,6 +250,9 @@ void detect_Task(void *arg)
     vTaskDelete(NULL);
 }
 
+/**
+ * @brief 初始化语音识别系统
+ */
 void initSpeechRecog(void)
 {
     models = esp_srmodel_init("model");
@@ -257,12 +271,15 @@ void initSpeechRecog(void)
     esp_afe_sr_data_t *afe_data = afe_handle->create_from_config(afe_config);
     afe_config_free(afe_config);
 
-    xTaskCreatePinnedToCore(detect_Task, "detect", 8 * 1024, (void*)afe_data, 5, NULL, 1);
-    xTaskCreatePinnedToCore(feed_Task, "feed", 8 * 1024, (void*)afe_data, 5, NULL, 0);
+    xTaskCreatePinnedToCore(detectTask, "detect", 8 * 1024, (void*)afe_data, 5, NULL, 1);
+    xTaskCreatePinnedToCore(feedTask, "feed", 8 * 1024, (void*)afe_data, 5, NULL, 0);
 }
 
 
-void autodetect_slot_mapping(void)
+/**
+ * @brief 自动检测TDM槽位到物理麦克风的映射关系
+ */
+void autodetectSlotMapping(void)
 {
     ESP_LOGI(TAG, "Auto-detect slot->mic mapping. Please clap near each microphone in order (mic0 -> mic1 -> mic2 -> mic3).");
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -312,29 +329,55 @@ void autodetect_slot_mapping(void)
     for (int i=0;i<CHANNELS;i++) ESP_LOGI(TAG, " slot %d -> mic %d", i, slot2mic[i]);
 }
 
-/* ----------------- Helper funcs ----------------- */
-static void init_hann_window(float *w, int n) {
+/* ==================== 辅助函数 ==================== */
+
+/**
+ * @brief 初始化汉宁窗
+ * @param w 窗函数数组
+ * @param n 窗长度
+ */
+static void initHannWindow(float *w, int n) {
     for (int i=0;i<n;i++) w[i] = 0.5f * (1.0f - cosf(2.0f*M_PI*i/(n-1)));
 }
 
-static float frame_energy(float *buf, int n) {
+/**
+ * @brief 计算帧能量
+ * @param buf 音频缓冲区
+ * @param n 帧长度
+ * @return 返回平均能量
+ */
+static float frameEnergy(float *buf, int n) {
     double e = 0;
     for (int i=0;i<n;i++) e += buf[i]*buf[i];
     return (float)(e/n);
 }
 
-// clamp helper
+/**
+ * @brief 限制浮点数值在指定范围内
+ * @param v 输入值
+ * @param lo 最小值
+ * @param hi 最大值
+ * @return 限制后的值
+ */
 static inline float clampf(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
 }
 
-// forward declare
-static void compute_taus_relative(float ch_frame_in[CHANNELS][FRAME_SIZE], int ref_idx, float taus[CHANNELS]);
+// 前向声明
+static void computeTausRelative(float ch_frame_in[CHANNELS][FRAME_SIZE], int ref_idx, float taus[CHANNELS]);
 
-/* time-domain GCC with limited lag window, returns tau (seconds) */
-static float tdoa_td_gcc(const float *a, const float *b, int n, int maxLag, int fs) {
+/**
+ * @brief 时域GCC（广义互相关）计算TDOA，限制延迟窗口
+ * @param a 第一个通道的音频数据
+ * @param b 第二个通道的音频数据
+ * @param n 数据长度
+ * @param maxLag 最大延迟（采样点数）
+ * @param fs 采样率
+ * @return 返回时延tau（秒）
+ */
+static float tdoaTdGcc(const float *a, const float *b, int n, int maxLag, int fs) {
     float best = -1e30f;
     int bestLag = 0;
     float energy_a = 0, energy_b = 0;
@@ -356,8 +399,13 @@ static float tdoa_td_gcc(const float *a, const float *b, int n, int maxLag, int 
     return (float)bestLag / (float)fs;
 }
 
-/* Deinterleave int32 raw buffer -> float per-channel frame (assumes slot order) */
-static void deinterleave_int32_to_float(int32_t *raw, int frames, float out[CHANNELS][FRAME_SIZE]) {
+/**
+ * @brief 将int32原始缓冲区解交织为每通道的浮点帧（假设按槽位顺序）
+ * @param raw 原始int32缓冲区
+ * @param frames 帧数
+ * @param out 输出的每通道浮点数组
+ */
+static void deinterleaveInt32ToFloat(int32_t *raw, int frames, float out[CHANNELS][FRAME_SIZE]) {
     const float scale = 1.0f / 2147483648.0f;
     for (int i=0;i<frames;i++) {
         int base = i * CHANNELS;
@@ -368,8 +416,13 @@ static void deinterleave_int32_to_float(int32_t *raw, int frames, float out[CHAN
     }
 }
 
-/* compute FFT of real time domain frame -> complex array (interleaved re,im) */
-static void compute_fft_real_frame(const float *time, float *complex_out, int n) {
+/**
+ * @brief 计算实数时域帧的FFT，输出复数数组（交织的实部、虚部）
+ * @param time 时域数据
+ * @param complex_out 输出的复数数组（交织格式）
+ * @param n FFT长度
+ */
+static void computeFftRealFrame(const float *time, float *complex_out, int n) {
     for (int i=0;i<n;i++) {
         complex_out[2*i]   = time[i];
         complex_out[2*i+1] = 0.0f;
@@ -377,10 +430,16 @@ static void compute_fft_real_frame(const float *time, float *complex_out, int n)
     dsps_fft2r_fc32(complex_out, n);
 }
 
-/* compute GCC-PHAT between complex spectra X and Y, return tau (seconds)
-   uses global buffer crossR for IFFT result.
-   Added debug prints for peak index/value, and constrain search to physical lag window. */
-static float gcc_phat_from_spectra(const float *X, const float *Y, int n, int fs) {
+/**
+ * @brief 计算复数频谱X和Y之间的GCC-PHAT，返回tau（秒）
+ * @param X 第一个通道的复数频谱
+ * @param Y 第二个通道的复数频谱
+ * @param n FFT长度
+ * @param fs 采样率
+ * @return 返回时延tau（秒）
+ * @note 使用全局缓冲区crossR存储IFFT结果，限制搜索范围到物理延迟窗口
+ */
+static float gccPhatFromSpectra(const float *X, const float *Y, int n, int fs) {
     for (int k=0;k<n;k++) {
         float xr = X[2*k], xi = X[2*k+1];
         float yr = Y[2*k], yi = Y[2*k+1];
@@ -440,25 +499,34 @@ static float gcc_phat_from_spectra(const float *X, const float *Y, int n, int fs
     return tau_sec;
 }
 
-/* compute all pairwise taus relative to reference mic ref_idx using GCC-PHAT */
-static void compute_taus_relative(float ch_frame_in[CHANNELS][FRAME_SIZE], int ref_idx, float taus[CHANNELS]) {
+/**
+ * @brief 使用GCC-PHAT计算相对于参考麦克风ref_idx的所有成对时延
+ * @param ch_frame_in 每通道的音频帧
+ * @param ref_idx 参考麦克风索引
+ * @param taus 输出的时延数组
+ */
+static void computeTausRelative(float ch_frame_in[CHANNELS][FRAME_SIZE], int ref_idx, float taus[CHANNELS]) {
     // compute FFT for each channel into local arrays
     static float spec[CHANNELS][FRAME_SIZE*2];
     for (int ch=0; ch<CHANNELS; ch++) {
-        compute_fft_real_frame(ch_frame_in[ch], spec[ch], FRAME_SIZE);
+        computeFftRealFrame(ch_frame_in[ch], spec[ch], FRAME_SIZE);
     }
     for (int i=0;i<CHANNELS;i++) {
         if (i == ref_idx) { taus[i] = 0.0f; continue; }
-        taus[i] = gcc_phat_from_spectra(spec[ref_idx], spec[i], FRAME_SIZE, SAMPLE_RATE);
+        taus[i] = gccPhatFromSpectra(spec[ref_idx], spec[i], FRAME_SIZE, SAMPLE_RATE);
     }
 }
 
-/* Gauss-Newton to solve for 3D position (x,y,z) given taus (relative to ref 0).
-   Uses mic_x/mic_y/mic_z arrays. di = taus[i] * c = r_i - r_ref.
-   Solve nonlinear least squares on function f_i(x) = (||p - mic_i|| - ||p - mic_ref||) - di[i]
-   Solve equations for i=1..3 (3 unknowns).
-*/
-static int estimate_position_gn(const float taus[CHANNELS], float *out_x, float *out_y, float *out_z) {
+/**
+ * @brief 使用高斯-牛顿法根据时延求解3D位置(x,y,z)
+ * @param taus 相对于参考麦克风0的时延数组
+ * @param out_x 输出的x坐标
+ * @param out_y 输出的y坐标
+ * @param out_z 输出的z坐标
+ * @return 成功返回0，失败返回-1
+ * @note 使用mic_x/mic_y/mic_z数组，di = taus[i] * c = r_i - r_ref
+ */
+static int estimatePositionGn(const float taus[CHANNELS], float *out_x, float *out_y, float *out_z) {
     // convert to di
     float di[CHANNELS];
     for (int i=0;i<CHANNELS;i++) di[i] = taus[i] * SPEED_OF_SOUND;
@@ -536,11 +604,15 @@ static int estimate_position_gn(const float taus[CHANNELS], float *out_x, float 
     return 0;
 }
 
-/* convert (x,y,z) to azimuth & elevation in degrees
-   azimuth: 0..360 deg, 0 = +x axis, measured CCW (y positive is 90deg)
-   elevation: -90..+90 deg (0 = horizontal plane positive upward)
-*/
-static void xyz_to_az_el(float x, float y, float z, float *az_deg, float *el_deg) {
+/**
+ * @brief 将(x,y,z)坐标转换为方位角和仰角（度）
+ * @param x x坐标
+ * @param y y坐标
+ * @param z z坐标
+ * @param az_deg 输出的方位角（度，0-360，0度=+x轴，逆时针，y正方向为90度）
+ * @param el_deg 输出的仰角（度，-90到+90，0度=水平面，向上为正）
+ */
+static void xyzToAzEl(float x, float y, float z, float *az_deg, float *el_deg) {
     float az = atan2f(y, x) * 180.0f / M_PI;
     if (az < 0) az += 360.0f;
     float r = sqrtf(x*x + y*y + z*z) + 1e-9f;
@@ -548,16 +620,21 @@ static void xyz_to_az_el(float x, float y, float z, float *az_deg, float *el_deg
     *az_deg = az; *el_deg = el;
 }
 
-/* ----------------- Kalman filter for azimuth & elevation (independent) ----------------- */
+/* ==================== 卡尔曼滤波器（用于方位角和仰角，独立处理） ==================== */
 typedef struct {
-    float x[2]; // angle deg, rate deg/s
-    float P[2][2];
-    float Q[2][2];
-    float R;
-    float dt;
+    float x[2]; // 角度（度），角速度（度/秒）
+    float P[2][2]; // 协方差矩阵
+    float Q[2][2]; // 过程噪声协方差
+    float R; // 测量噪声协方差
+    float dt; // 时间步长
 } kalman_ang_t;
 
-static void kalman_init(kalman_ang_t *kf, float dt) {
+/**
+ * @brief 初始化卡尔曼滤波器
+ * @param kf 卡尔曼滤波器结构体指针
+ * @param dt 时间步长
+ */
+static void kalmanInit(kalman_ang_t *kf, float dt) {
     kf->dt = dt;
     kf->x[0]=0; kf->x[1]=0;
     kf->P[0][0]=1; kf->P[0][1]=0; kf->P[1][0]=0; kf->P[1][1]=1;
@@ -565,14 +642,25 @@ static void kalman_init(kalman_ang_t *kf, float dt) {
     kf->R = KALMAN_R_MEAS;
 }
 
-static float wrap_diff_deg(float a, float b) { // returns a-b wrapped to [-180,180]
+/**
+ * @brief 计算角度差并包装到[-180, 180]范围
+ * @param a 第一个角度
+ * @param b 第二个角度
+ * @return 返回a-b，包装到[-180, 180]范围
+ */
+static float wrapDiffDeg(float a, float b) {
     float d = a - b;
     while (d > 180.0f) d -= 360.0f;
     while (d < -180.0f) d += 360.0f;
     return d;
 }
 
-static void kalman_update_angle(kalman_ang_t *kf, float meas_deg) {
+/**
+ * @brief 使用角度测量值更新卡尔曼滤波器
+ * @param kf 卡尔曼滤波器结构体指针
+ * @param meas_deg 测量的角度值（度）
+ */
+static void kalmanUpdateAngle(kalman_ang_t *kf, float meas_deg) {
     // predict
     float A00=1, A01=kf->dt, A10=0, A11=1;
     float x0 = A00*kf->x[0] + A01*kf->x[1];
@@ -584,9 +672,9 @@ static void kalman_update_angle(kalman_ang_t *kf, float meas_deg) {
     float P11 = A10*kf->P[0][1]*A01 + A11*kf->P[1][1]*A01 + kf->Q[1][1];
     kf->x[0]=x0; kf->x[1]=x1;
     kf->P[0][0]=P00; kf->P[0][1]=P01; kf->P[1][0]=P10; kf->P[1][1]=P11;
-    // update using angle measurement (wrap handling)
+    // 使用角度测量值更新（处理角度包装）
     float pred = kf->x[0];
-    float diff = wrap_diff_deg(meas_deg, pred);
+    float diff = wrapDiffDeg(meas_deg, pred);
     float S = kf->P[0][0] + kf->R;
     float K0 = kf->P[0][0] / S;
     float K1 = kf->P[1][0] / S;
@@ -607,33 +695,36 @@ static void kalman_update_angle(kalman_ang_t *kf, float meas_deg) {
     while (kf->x[0] >=360.0f) kf->x[0]-=360.0f;
 }
 
-/* ----------------- Processing pipeline ----------------- 
-   Note: For simplicity we process frames without overlap here. For production use, maintain ring buffer and process with hop HOP_SIZE.
+/* ==================== 处理流水线 ==================== 
+   注意：为简化起见，这里处理帧时不使用重叠。生产环境应维护环形缓冲区并使用跳跃大小HOP_SIZE处理。
 */
-static void process_one_frame() {
-    // 1) deinterleave raw int32 -> ch_frame (float) according to slot2mic
-    deinterleave_int32_to_float(raw_i2s_buf, FRAME_SIZE, ch_frame);
+/**
+ * @brief 处理一帧音频数据（DOA计算）
+ */
+static void processOneFrame() {
+    // 1) 根据slot2mic映射将原始int32数据解交织为ch_frame（浮点）
+    deinterleaveInt32ToFloat(raw_i2s_buf, FRAME_SIZE, ch_frame);
 
-    // 2) compute per-channel energy and VAD
+    // 2) 计算每通道能量和VAD（语音活动检测）
     float total_e = 0.0f;
-    for (int ch=0; ch<CHANNELS; ch++) total_e += frame_energy(ch_frame[ch], FRAME_SIZE);
+    for (int ch=0; ch<CHANNELS; ch++) total_e += frameEnergy(ch_frame[ch], FRAME_SIZE);
     if (total_e < VAD_ENERGY_TH) {
-        // skip if silence
+        // 静音，跳过处理
         return;
     }
 
-    // 3) apply hann window in-place (or copy before FFT)
+    // 3) 原地应用汉宁窗（或在FFT前复制）
     for (int ch=0; ch<CHANNELS; ch++) {
         for (int i=0;i<FRAME_SIZE;i++) ch_frame[ch][i] *= hann_win[i];
     }
 
-    // 4) 计算参考麦(0)相对的 TDOA（时间域 GCC，限最大延时 = 物理上限）
-    const float baseline = 0.05f; // 5 cm
-    const float max_tau = baseline / SPEED_OF_SOUND; // 约 0.00015s @16kHz ≈ 2.4 samples
+    // 4) 计算相对于参考麦克风(0)的TDOA（时域GCC，限制最大延迟=物理上限）
+    const float baseline = 0.05f; // 5厘米
+    const float max_tau = baseline / SPEED_OF_SOUND; // 约0.00015秒 @16kHz ≈ 2.4个采样点
     int maxLagSamples = (int)ceilf(max_tau * (float)SAMPLE_RATE);
     if (maxLagSamples < 1) maxLagSamples = 1;
-    float tau_x = tdoa_td_gcc(ch_frame[0], ch_frame[1], FRAME_SIZE, maxLagSamples, SAMPLE_RATE); // M1 vs M2 (上排左右)
-    float tau_y = tdoa_td_gcc(ch_frame[0], ch_frame[3], FRAME_SIZE, maxLagSamples, SAMPLE_RATE); // M1 vs M4 (右上 vs 右下)
+    float tau_x = tdoaTdGcc(ch_frame[0], ch_frame[1], FRAME_SIZE, maxLagSamples, SAMPLE_RATE); // M1 vs M2 (上排左右)
+    float tau_y = tdoaTdGcc(ch_frame[0], ch_frame[3], FRAME_SIZE, maxLagSamples, SAMPLE_RATE); // M1 vs M4 (右上 vs 右下)
 
     // 5) 方位角（平面波假设）+ 简单低通平滑减少抖动
     static int tau_init = 0;
@@ -659,7 +750,11 @@ static void process_one_frame() {
         angle, tau_x*1e6f, tau_y*1e6f, total_e);
 }
 
-void audio_doa_task(void *arg)
+/**
+ * @brief 音频DOA（到达方向）计算任务
+ * @param arg 任务参数（未使用）
+ */
+void audioDoaTask(void *arg)
 {
     size_t bytes_to_read = sizeof(int32_t) * FRAME_SIZE * CHANNELS;
     while (1) {
@@ -686,7 +781,7 @@ void audio_doa_task(void *arg)
 
 
         esp_codec_dev_read(record_dev, raw_i2s_buf, bytes_to_read);
-        process_one_frame();
+        processOneFrame();
 
         vTaskDelay(50);
     }
@@ -694,19 +789,22 @@ void audio_doa_task(void *arg)
 }
 
 
+/**
+ * @brief 初始化音频DOA（到达方向）系统
+ */
 void initAudioDoa(void)
 {
-    init_hann_window(hann_win, FRAME_SIZE);
+    initHannWindow(hann_win, FRAME_SIZE);
     dsps_fft2r_init_fc32(NULL, FRAME_SIZE);
-    // Create queue for storing pointers (int32_t*), not data itself
-    // This is more efficient for large data blocks
+    // 创建队列用于存储指针(int32_t*)，而不是数据本身
+    // 这对于大数据块更高效
     // audio_queue = xQueueCreate(10, sizeof(int32_t*));
     // if (!audio_queue) {
-    //     ESP_LOGE(TAG, "Failed to create audio queue");
+    //     ESP_LOGE(TAG, "创建音频队列失败");
     //     return;
     // }
-    //xTaskCreatePinnedToCore(audio_doa_task, "audio_doa", 8 * 1024, NULL, 5, NULL, 0);
-    xTaskCreate(audio_doa_task, "audio_doa_task", 8*1024, NULL, 5, NULL);
+    //xTaskCreatePinnedToCore(audioDoaTask, "audio_doa", 8 * 1024, NULL, 5, NULL, 0);
+    xTaskCreate(audioDoaTask, "audio_doa_task", 8*1024, NULL, 5, NULL);
 }
 
 

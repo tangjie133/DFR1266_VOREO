@@ -9,7 +9,7 @@ void app_main(void)
     initMIC();
     peripheralInit();
     setRGBColor(RGB_BLACK);
-    //autodetect_slot_mapping();
+    //autodetectSlotMapping();
     initAudioDoa();
     //initSpeechRecog();
 

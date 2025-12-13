@@ -1,5 +1,5 @@
 {
-  "idf.pythonInstallPath": "d:\\cursorEspidf\\Espressif\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.pythonInstallPath": "D:\\Espressif\\Espressif\\tools\\idf-python\\3.11.2\\python.exe",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
   },
@@ -16,5 +16,7 @@
     "peripheralcode.h": "c",
     "esp_log.h": "c",
     "esp_dsp.h": "c"
-  }
+  },
+  "idf.espIdfPathWin": "D:/Espressif/frameworks/esp-idf-v5.5.1/",
+  "idf.toolsPathWin": "D:\\Espressif\\Espressif"
 }

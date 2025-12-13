@@ -1,7 +1,11 @@
 # Name,   Type, SubType, Offset,  Size, Flags
-# Note: Flash size is 2MB (0x200000), partition table offset at 0x8000
-# Total available: 0x10000 to 0x200000 = 0x1F0000 (1.94MB)
+# Note: Flash size is 16MB (0x1000000), partition table offset at 0x8000
+# Total available: 0x10000 to 0x1000000 = 0xFF0000 (15.9375MB)
+# 5168K = 0x50C000 bytes
+# 计算：factory_size = 0xFF0000 - 0x50C000 = 0xAE3000
+# factory: 0x10000 + 0xAE3000 = 0xAF3000 (结束)
+# model: 0xAF3000 + 0x50C000 = 0xAFF000 (结束，小于0x1000000)
 nvs,      data, nvs,     0x9000,  0x6000,
 phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x280000,
-model,  data, spiffs,         , 5168K, 
+factory,  app,  factory, 0x10000, 0xAE3000,
+model,    data, spiffs,  0xAF3000, 5168K, 

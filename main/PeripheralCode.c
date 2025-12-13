@@ -22,12 +22,21 @@
 #define CRC16_POLYNOMIAL 0x1021
 #define CRC16_INITIAL_VALUE 0xFFFF
 
-// Static GAT data list instance
+// GAT数据链表实例
 static gat_data_list_t *gatDataList = NULL;
 
 static int commMode = UART_MODE;
-static i2c_slave_dev_handle_t slave_handle;
-extern float angle;
+extern float angle; 
+
+static i2c_slave_dev_handle_t slave_handle = NULL;
+
+static QueueHandle_t slaveReceiveQueue = NULL;
+static i2c_slave_rx_done_event_data_t rx_data;
+
+typedef enum {
+    I2C_SLAVE_EVT_RX,
+    I2C_SLAVE_EVT_TX
+} i2c_slave_event_t;
 
 // GAT解析状态机状态（需要保持跨函数调用）
 static struct {
@@ -82,31 +91,63 @@ static uint16_t calculateCRC16(const uint8_t *data, size_t len)
     
     return crc;
 }
-//发送数据包
+/**
+ * @brief 发送数据包（自动添加包头和CRC16校验）
+ * @param data 要发送的数据缓冲区
+ * @param len 数据长度
+ * @param cmd 命令类型
+ */
 static void sendBuf(uint8_t *data, size_t len, uint8_t cmd)
 {
-    uint8_t buf[len + 6];
-    buf[0] = USER_UART_CMD_HEAD;
-    buf[1] = (len  << 8) & 0xff;
-    buf[2] = len & 0xff;    
-    buf[3] = cmd;
-    memcpy(buf + 4, data, len);
-    uint16_t crc = calculateCRC16(buf, len + 4);
-    buf[len + 4] = (uint8_t)(crc >> 8);
-    buf[len + 5] = (uint8_t)(crc & 0xFF);
-    //ESP_LOGW(TAG, "CRC: 0x%02X", crc);
+    // 限制最大数据长度，避免栈溢出
+    const size_t MAX_PACKET_SIZE = GAT_DATA_BUFFER_MAX_SIZE + 6;
+    if (len > GAT_DATA_BUFFER_MAX_SIZE) {
+        ESP_LOGE(TAG, "数据长度超出限制: %d > %d", len, GAT_DATA_BUFFER_MAX_SIZE);
+        return;
+    }
+    
+    // 使用固定大小的缓冲区，避免变长数组导致的栈溢出
+    static uint8_t send_buffer[GAT_DATA_BUFFER_MAX_SIZE + 6];
+    size_t total_len = len + 6;
+    
+    send_buffer[0] = USER_UART_CMD_HEAD;
+    send_buffer[1] = (len >> 8) & 0xff;
+    send_buffer[2] = len & 0xff;    
+    send_buffer[3] = cmd;
+    memcpy(send_buffer + 4, data, len);
+    uint16_t crc = calculateCRC16(send_buffer, len + 4);
+    send_buffer[len + 4] = (uint8_t)(crc >> 8);
+    send_buffer[len + 5] = (uint8_t)(crc & 0xFF);
+    
     if(commMode == UART_MODE){
-        uart_write_bytes(USERUART_PORT, buf, len + 6);
+        // 使用非阻塞方式写入，避免阻塞导致看门狗超时
+        int written = uart_write_bytes(USERUART_PORT, send_buffer, total_len);
+        if (written < 0) {
+            ESP_LOGE(TAG, "UART写入失败");
+        } else if ((size_t)written < total_len) {
+            ESP_LOGW(TAG, "UART部分写入: %d/%d", written, total_len);
+        }
+        // 刷新发送缓冲区，确保数据发送完成
+        uart_wait_tx_done(USERUART_PORT, pdMS_TO_TICKS(100));
     }else if(commMode == I2C_MODE){
-        i2c_slave_transmit(&slave_handle, buf, len + 6, -1);
+        // I2C从机发送，使用较短的超时时间，避免阻塞导致看门狗超时
+        esp_err_t ret = i2c_slave_transmit(slave_handle, send_buffer, total_len, pdMS_TO_TICKS(50));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2C从机发送失败: %s", esp_err_to_name(ret));
+        }
     }
 }
 
+/**
+ * @brief 解析用户UART数据（状态机实现）
+ * @param data 接收到的数据缓冲区
+ * @param len 数据长度
+ */
 static void userParseData(const uint8_t *data, size_t len)
 {
     uint8_t sendData = 0;
     if (!data || len == 0) {
-        ESP_LOGW(TAG, "Invalid USER data: NULL pointer or zero length");
+        ESP_LOGW(TAG, "无效的用户数据：空指针或长度为零");
         return;
     }
 
@@ -261,30 +302,28 @@ static void userParseData(const uint8_t *data, size_t len)
     }
 }
 
+/**
+ * @brief 用户UART任务（轮询模式接收数据）
+ * @param pvParameters 任务参数（未使用）
+ */
 static void userUartTask(void *pvParameters)
 {
     uart_event_t event;
     int dataLen = 0;
-    uint8_t* dtmp = (uint8_t*) malloc(UART_READ_BUF_SIZE);
+    uint8_t* dtmp = (uint8_t*) malloc(UART_READ_BUF_SIZE + 1);
     assert(dtmp);
     while (1)
     {
-        if(commMode == UART_MODE){
-            dataLen = uart_read_bytes(USERUART_PORT, dtmp, UART_READ_BUF_SIZE, 0);
-        }else if(commMode == I2C_MODE){
-            dataLen = i2c_slave_receive(slave_handle, dtmp, UART_READ_BUF_SIZE);
-            if(dataLen == ESP_OK){
-                ESP_LOGI(TAG, "I2C_SLAVE_NUM receive data success");
-                dataLen = (dtmp[1] << 8 | dtmp[2]) + 5;
-            }else{
-                dataLen = 0;
-                ESP_LOGE(TAG, "I2C_SLAVE_NUM receive data failed");
-            }
-        }
+        dataLen = uart_read_bytes(USERUART_PORT, dtmp, UART_READ_BUF_SIZE, 0);
+            
         if (dataLen > 0) {
             // CRC16需要至少3个字节（1字节数据 + 2字节CRC）
             if (dataLen < 3) {
-                ESP_LOGW(TAG, "USER UART data too short for CRC16: %d bytes", dataLen);
+                ESP_LOGW(TAG, "用户UART数据太短，无法进行CRC16校验：%d 字节", dataLen);
+                // 继续处理，但让出CPU
+                if(commMode == I2C_MODE){
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                }
                 continue;
             }
             
@@ -300,23 +339,28 @@ static void userUartTask(void *pvParameters)
                 userParseData(dtmp, dataLen - 2);
             } else {
                 // 校验失败，跳过该数据包
-                ESP_LOGW(TAG, "USER UART CRC16 error: calculated=0x%04X, received=0x%04X", 
+                ESP_LOGW(TAG, "用户UART CRC16校验错误：计算值=0x%04X，接收值=0x%04X", 
                          calculated_crc, received_crc);
             }
         } 
-        // No data available, yield CPU
+        // 没有数据可用，让出CPU
+        // I2C模式下使用更长的延迟，确保及时让出CPU避免看门狗超时
+        if(commMode == I2C_MODE){
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }else{
         vTaskDelay(1);
     }
 }
+}
 /**
- * @brief Parse GTA communication data
- * @param data Pointer to received data buffer
- * @param len Length of received data
+ * @brief 解析GTA通信数据（状态机实现）
+ * @param data 接收到的数据缓冲区指针
+ * @param len 接收到的数据长度
  */
 static void gtaParseData(const uint8_t *data, size_t len)
 {
     if (!data || len == 0) {
-        ESP_LOGW(TAG, "Invalid GTA data: NULL pointer or zero length");
+        ESP_LOGW(TAG, "无效的GTA数据：空指针或长度为零");
         return;
     }
     
@@ -371,8 +415,8 @@ static void gtaParseData(const uint8_t *data, size_t len)
             default:
                 ESP_LOGW(TAG, "Unknown GTA command received: 0x%02X, reset state", data[i]);
                 gatParseState.cmdState = GAT_UART_CMD_HEAD0; // 重置状态，避免卡住
-                break;
-           }
+                    break;
+            }
         }else if(gatParseState.cmdState == UART_CMD_LEN_H){
             gatParseState.dataLen = (uint16_t)data[i] << 8;
             gatParseState.cmdState = UART_CMD_LEN_L;
@@ -446,8 +490,12 @@ static void gtaParseData(const uint8_t *data, size_t len)
     }
 }
 
-// ==================== GAT Data List Implementation ====================
+// ==================== GAT数据链表实现 ====================
 
+/**
+ * @brief 初始化GAT数据链表
+ * @return 返回初始化后的链表指针，失败返回NULL
+ */
 gat_data_list_t* gatDataListInit(void)
 {
     gat_data_list_t *list = (gat_data_list_t*)malloc(sizeof(gat_data_list_t));
@@ -461,6 +509,12 @@ gat_data_list_t* gatDataListInit(void)
     return list;
 }
 
+/**
+ * @brief 创建新的GAT数据节点
+ * @param cmd 命令类型
+ * @param data_len 期望的数据长度
+ * @return 返回新节点的指针，失败返回NULL
+ */
 gat_data_node_t* gatDataNodeCreate(uint8_t cmd, uint16_t data_len)
 {
     if (data_len == 0 || data_len > GAT_DATA_BUFFER_MAX_SIZE) {
@@ -489,6 +543,12 @@ gat_data_node_t* gatDataNodeCreate(uint8_t cmd, uint16_t data_len)
     return node;
 }
 
+/**
+ * @brief 向链表添加节点
+ * @param list 链表指针
+ * @param node 要添加的节点指针
+ * @return 成功返回0，失败返回-1
+ */
 int gatDataListAdd(gat_data_list_t *list, gat_data_node_t *node)
 {
     if (!list || !node) {
@@ -506,6 +566,13 @@ int gatDataListAdd(gat_data_list_t *list, gat_data_node_t *node)
     return 0;
 }
 
+/**
+ * @brief 向节点追加数据
+ * @param node 目标节点指针
+ * @param data 要追加的数据缓冲区
+ * @param len 要追加的数据长度
+ * @return 返回实际追加的字节数
+ */
 int gatDataNodeAppend(gat_data_node_t *node, const uint8_t *data, size_t len)
 {
     if (!node || !data || len == 0) {
@@ -523,6 +590,11 @@ int gatDataNodeAppend(gat_data_node_t *node, const uint8_t *data, size_t len)
     return to_copy;
 }
 
+/**
+ * @brief 检查节点数据是否接收完整
+ * @param node 节点指针
+ * @return 完整返回true，否则返回false
+ */
 bool gatDataNodeIsComplete(gat_data_node_t *node)
 {
     if (!node) {
@@ -531,6 +603,12 @@ bool gatDataNodeIsComplete(gat_data_node_t *node)
     return (node->received_len >= node->data_len);
 }
 
+/**
+ * @brief 从链表中移除节点并释放内存
+ * @param list 链表指针
+ * @param node 要移除的节点指针
+ * @return 成功返回0，失败返回-1
+ */
 int gatDataListRemove(gat_data_list_t *list, gat_data_node_t *node)
 {
     if (!list || !node) {
@@ -562,6 +640,11 @@ int gatDataListRemove(gat_data_list_t *list, gat_data_node_t *node)
     return 0;
 }
 
+/**
+ * @brief 获取链表中第一个未完成的节点
+ * @param list 链表指针
+ * @return 返回未完成节点指针，如果没有则返回NULL
+ */
 gat_data_node_t* gatDataListGetIncomplete(gat_data_list_t *list)
 {
     if (!list) {
@@ -578,6 +661,11 @@ gat_data_node_t* gatDataListGetIncomplete(gat_data_list_t *list)
     return NULL;
 }
 
+/**
+ * @brief 获取链表中第一个已完成的节点
+ * @param list 链表指针
+ * @return 返回已完成节点指针，如果没有则返回NULL
+ */
 gat_data_node_t* gatDataListGetComplete(gat_data_list_t *list)
 {
     if (!list) {
@@ -594,6 +682,10 @@ gat_data_node_t* gatDataListGetComplete(gat_data_list_t *list)
     return NULL;
 }
 
+/**
+ * @brief 释放节点内存
+ * @param node 要释放的节点指针
+ */
 void gatDataNodeFree(gat_data_node_t *node)
 {
     if (node) {
@@ -605,6 +697,10 @@ void gatDataNodeFree(gat_data_node_t *node)
     }
 }
 
+/**
+ * @brief 释放整个链表及其所有节点
+ * @param list 要释放的链表指针
+ */
 void gatDataListFree(gat_data_list_t *list)
 {
     if (!list) {
@@ -621,6 +717,11 @@ void gatDataListFree(gat_data_list_t *list)
     free(list);
 }
 
+/**
+ * @brief 获取链表中节点的数量
+ * @param list 链表指针
+ * @return 返回节点数量
+ */
 uint32_t gatDataListGetCount(gat_data_list_t *list)
 {
     if (!list) {
@@ -629,38 +730,68 @@ uint32_t gatDataListGetCount(gat_data_list_t *list)
     return list->count;
 }
 
+/**
+ * @brief GTA UART任务（轮询模式接收数据）
+ * @param pvParameters 任务参数（未使用）
+ */
 static void gtaUartTask(void *pvParameters)
 {
     uint8_t* dtmp = (uint8_t*) malloc(UART_READ_BUF_SIZE + 1);
     assert(dtmp);
     while (1)
     {
-        // Option 1: Polling mode - read available data (non-blocking)
-        // This reads up to UART_READ_BUF_SIZE bytes, returns immediately if less data available
+        // 轮询模式：读取可用数据（非阻塞）
+        // 最多读取UART_READ_BUF_SIZE字节，如果数据不足则立即返回
         int len = uart_read_bytes(GTA_UART_PORT, dtmp, UART_READ_BUF_SIZE, 0);
         if (len > 0) {
             gtaParseData(dtmp, len);
         } else {
-            // No data available, yield CPU
+            // 没有数据可用，让出CPU
             vTaskDelay(1);
         }
     }
 }
 
+// I2C从机接收完成回调函数
+static bool i2cSlaveReceiveDoneCb(i2c_slave_dev_handle_t i2c_slave, const i2c_slave_rx_done_event_data_t *evt_data, void *arg)
+{
+    QueueHandle_t receive_queue = (QueueHandle_t)arg;  // 修复：使用arg而不是user_data
+    i2c_slave_event_t evt = I2C_SLAVE_EVT_RX;
+    BaseType_t xTaskWoken = 0;
+    // 发送接收事件到队列
+    ESP_LOGI(TAG, "I2C从机接收数据成功，长度: %d", evt_data->rx_data_len);
+    xQueueSendFromISR(receive_queue, &evt, &xTaskWoken);
+    return xTaskWoken;
+}
 
+// I2C从机请求完成回调函数（用于发送数据）
+static bool i2cSlaveRequestDoneCb(i2c_slave_dev_handle_t i2c_slave, const i2c_slave_request_event_data_t *evt_data, void *arg)
+{
+    QueueHandle_t receive_queue = (QueueHandle_t)arg;  // 修复：使用arg而不是user_data
+    i2c_slave_event_t evt = I2C_SLAVE_EVT_TX;
+    BaseType_t xTaskWoken = 0;
+    // 发送请求事件到队列
+    xQueueSendFromISR(receive_queue, &evt, &xTaskWoken);
+    return xTaskWoken;
+}
+
+/**
+ * @brief 初始化外设（RGB灯、UART、I2C等）
+ * @return 成功返回0，失败返回-1
+ */
 int peripheralInit(void)
 {
-    //初始化RGB灯
+    // 初始化RGB灯
     led_strip_install();
     int ret = led_strip_init(&strip);
     
-    //初始化GAT数据链表
+    // 初始化GAT数据链表
     gatDataList = gatDataListInit();
     if (!gatDataList) {
-        ESP_LOGE(TAG, "Failed to initialize GAT data list");
+        ESP_LOGE(TAG, "初始化GAT数据链表失败");
         return -1;
     }
-    ESP_LOGI(TAG, "GAT data list initialized");
+    ESP_LOGI(TAG, "GAT数据链表初始化成功");
     uart_config_t config = {
         .baud_rate = UART_BAUDRATE,
         .data_bits = UART_DATA_BITS,
@@ -669,12 +800,12 @@ int peripheralInit(void)
         .flow_ctrl = UART_FLOW_CTRL,
         .source_clk = UART_SOURCE_CLK,
     };
-    //初始化GTA UART
+    // 初始化GTA UART
     uart_driver_install(GTA_UART_PORT, UART_BUF_SIZE * 2, UART_BUF_SIZE * 2, 0, NULL, 0);
     uart_param_config(GTA_UART_PORT, &config);
     uart_set_pin(GTA_UART_PORT, GTA_UART_TX_GPIO, GTA_UART_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     xTaskCreate(gtaUartTask, "gtaUartTask", 8*1024, NULL, 10, NULL);
-    // 配置 GPIO 为输入
+    // 配置GPIO为输入模式
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,      // 不使用中断
         .mode = GPIO_MODE_INPUT,             // 输入模式
@@ -695,20 +826,38 @@ int peripheralInit(void)
             .sda_io_num = USERUART_TX_SDA_GPIO,
             .slave_addr = USERI2C_ADDRESS,
         };
-    
         
-        i2c_new_slave_device(&i2c_slv_config, &slave_handle);
-        ESP_LOGI(TAG, "I2C_SLAVE_NUM is initialized");
+        // i2c_new_slave_device的第一个参数可能是端口号，而不是配置结构
+        esp_err_t err = i2c_new_slave_device(&i2c_slv_config, &slave_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "创建I2C从机设备失败: %s", esp_err_to_name(err));
+            return -1;
+        }
+        slaveReceiveQueue = xQueueCreate(10, sizeof(i2c_slave_rx_done_event_data_t));
+        i2c_slave_event_callbacks_t callbacks = {
+            .on_receive = i2cSlaveReceiveDoneCb,
+            .on_request = i2cSlaveRequestDoneCb,
+        };
+        ESP_ERROR_CHECK(i2c_slave_register_event_callbacks(slave_handle, &callbacks, slaveReceiveQueue));
+        // 配置I2C从机引脚（如果API支持）
+        // 注意：ESP-IDF 5.3.4的I2C从机API可能需要单独配置引脚
+        ESP_LOGI(TAG, "I2C从机设备初始化成功，地址: 0x%02X", USERI2C_ADDRESS);
     } else {
         uart_driver_install(USERUART_PORT, UART_BUF_SIZE * 2, UART_BUF_SIZE * 2, 0, NULL, 0);
         uart_param_config(USERUART_PORT, &config);
         uart_set_pin(USERUART_PORT, USERUART_TX_SDA_GPIO, USERUART_RX_SCL_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        xTaskCreate(userUartTask, "userUartTask", 8*1024, NULL, 5, NULL);
         ESP_LOGI(TAG, "USERUART_PORT is initialized");
     }
-    xTaskCreate(userUartTask, "userUartTask", 8*1024, NULL, 5, NULL);
+    
     return ret;
 }
 
+/**
+ * @brief 设置RGB灯颜色
+ * @param color RGB颜色值
+ * @return 成功返回0，失败返回非0
+ */
 int setRGBColor(rgb_t color)
 {
     led_strip_set_pixel(&strip, 0, color);
