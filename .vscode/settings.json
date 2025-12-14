@@ -1,5 +1,5 @@
 {
-  "idf.pythonInstallPath": "D:\\Espressif\\Espressif\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.pythonInstallPath": "d:\\esp-idf\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
   },
@@ -10,13 +10,13 @@
     "--compile-commands-dir=c:\\Users\\13348\\Desktop\\DFR1266_VOREO\\build"
   ],
   "idf.flashType": "UART",
-  "idf.portWin": "COM32",
+  "idf.portWin": "COM6",
   "files.associations": {
     "led_strip.h": "c",
     "peripheralcode.h": "c",
     "esp_log.h": "c",
     "esp_dsp.h": "c"
   },
-  "idf.espIdfPathWin": "D:/Espressif/frameworks/esp-idf-v5.5.1/",
-  "idf.toolsPathWin": "D:\\Espressif\\Espressif"
+  "idf.espIdfPathWin": "d:\\esp-idf\\v5.5.1\\esp-idf",
+  "idf.toolsPathWin": "d:\\esp-idf\\.espressif"
 }

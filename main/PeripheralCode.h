@@ -58,6 +58,15 @@
 #define USER_UART_CMD_SET_ASR            (0x06) //设置ASR命令
 #define USER_UART_CMD_TTS_SPEED          (0x07) //TTS速度命令
 
+
+#define I2C_SLAVE_CMD_ERROR               (0x20)
+#define I2C_SLAVE_CMD_GET_LEN             (0x21)
+
+#define I2C_SLAVE_SEND_STATIC_OK          (0x30)
+#define I2C_SLAVE_SEND_STATIC_ERROR       (0x31)
+#define I2C_SLAVE_SEND_STATIC_LEN         (0x32)
+#define I2C_SLAVE_SEND_STATIC_DATA        (0x33)
+
 // GAT UART数据缓冲区最大大小
 #define GAT_DATA_BUFFER_MAX_SIZE         (4096)
 
