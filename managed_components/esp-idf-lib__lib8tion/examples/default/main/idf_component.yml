@@ -1,5 +1,0 @@
-dependencies:
-  esp-idf-lib/lib8tion:
-    version: '*'
-description: default
-version: 1.0.0

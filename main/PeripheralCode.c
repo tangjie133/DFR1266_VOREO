@@ -39,6 +39,10 @@ static uint16_t i2cSlaveDataLen = 0;
 static uint16_t i2cSlaveSendDataLne = 0;
 static uint8_t i2cSlaveSendStatic = I2C_SLAVE_SEND_STATIC_ERROR;
 
+// I2C分包接收缓冲区
+static uint8_t i2cRxBuffer[UART_READ_BUF_SIZE];  // 接收缓冲区
+static uint16_t i2cRxBufferLen = 0;              // 当前接收缓冲区中的数据长度
+static uint16_t i2cExpectedPacketLen = 0;         // 期望的数据包总长度（根据包头和长度字段计算）
 
 // I2C接收数据结构
 typedef struct {
@@ -358,15 +362,25 @@ static void i2cSlaveTask(void *pvParameters)
                         i2c_slave_write(slave_handle, i2cSlaveSendData, i2cSlaveSendDataLne, &write_len, pdMS_TO_TICKS(1000));
                         i2cSlaveSendStatic = I2C_SLAVE_SEND_STATIC_ERROR;
                     }else{
-                        if(write_data_len < i2cSlaveSendDataLne){
+                        // 计算剩余需要发送的数据长度
+                        uint16_t remaining = i2cSlaveSendDataLne - write_data_len;
+                        if(remaining > 32){
+                            // 还有超过32字节的数据，发送32字节
                             ESP_LOGI(TAG, "I2C从机请求发送数据，长度: %d", 32);
-                            write_len = i2c_slave_write(slave_handle, i2cSlaveSendData + write_data_len, 32, &write_len, pdMS_TO_TICKS(1000));
-                            write_data_len += 32;
-                        }else{//发送末尾数据
-                            ESP_LOGI(TAG, "I2C从机请求发送数据，长度: %d", i2cSlaveSendDataLne - write_data_len);
-                            i2c_slave_write(slave_handle, i2cSlaveSendData + write_data_len, i2cSlaveSendDataLne - write_data_len, &write_len, pdMS_TO_TICKS(1000));
-                            i2cSlaveSendStatic = I2C_SLAVE_SEND_STATIC_ERROR;
-                            write_data_len = 0;  // 重置写入长度
+                            i2c_slave_write(slave_handle, i2cSlaveSendData + write_data_len, 32, &write_len, pdMS_TO_TICKS(1000));
+                            // 使用实际写入的长度更新进度
+                            write_data_len += write_len;
+                        }else{
+                            // 发送末尾数据（剩余数据 <= 32字节）
+                            ESP_LOGI(TAG, "I2C从机请求发送数据，长度: %d", remaining);
+                            i2c_slave_write(slave_handle, i2cSlaveSendData + write_data_len, remaining, &write_len, pdMS_TO_TICKS(1000));
+                            // 使用实际写入的长度更新进度
+                            write_data_len += write_len;
+                            // 检查是否发送完成
+                            if(write_data_len >= i2cSlaveSendDataLne){
+                                i2cSlaveSendStatic = I2C_SLAVE_SEND_STATIC_ERROR;
+                                write_data_len = 0;  // 重置写入长度
+                            }
                         }
                     }
                 }
@@ -381,23 +395,79 @@ static void i2cSlaveTask(void *pvParameters)
                 ESP_LOGI(TAG, "I2C从机接收数据成功，长度: %d", i2cSlaveDataLen);
                 setRGBColor(RGB_GREEN);
                 
-                // 检查是否是GET_LEN命令（单字节命令）
-                if(i2cSlaveDataLen == 1 && i2cSlaveData[0] == I2C_SLAVE_CMD_GET_LEN){
+                // 检查是否是GET_LEN命令（单字节命令，且缓冲区为空）
+                if(i2cSlaveDataLen == 1 && i2cRxBufferLen == 0 && i2cSlaveData[0] == I2C_SLAVE_CMD_GET_LEN){
                     // 保存命令，等待TX事件处理
                     last_rx_cmd = I2C_SLAVE_CMD_GET_LEN;
                     ESP_LOGI(TAG, "收到I2C GET_LEN命令");
-                }else{
-                    // 将接收到的数据通过队列传递给I2C数据处理任务
-                    if(i2cDataQueue != NULL && i2cSlaveDataLen > 0){
-                        i2c_received_data_t received_data;
-                        if(i2cSlaveDataLen <= UART_READ_BUF_SIZE){
-                            memcpy(received_data.data, i2cSlaveData, i2cSlaveDataLen);
-                            received_data.len = i2cSlaveDataLen;
-                            if(xQueueSend(i2cDataQueue, &received_data, pdMS_TO_TICKS(100)) != pdTRUE){
-                                ESP_LOGW(TAG, "I2C数据队列已满，丢弃数据");
+                    i2cSlaveDataLen = 0;
+                    continue;
+                }
+                
+                // 分包接收处理
+                if(i2cSlaveDataLen > 0){
+                    // 检查缓冲区是否有足够空间
+                    if(i2cRxBufferLen + i2cSlaveDataLen > UART_READ_BUF_SIZE){
+                        ESP_LOGW(TAG, "I2C接收缓冲区溢出，重置接收状态");
+                        i2cRxBufferLen = 0;
+                        i2cExpectedPacketLen = 0;
+                    }else{
+                        // 将新接收的数据追加到缓冲区
+                        memcpy(i2cRxBuffer + i2cRxBufferLen, i2cSlaveData, i2cSlaveDataLen);
+                        i2cRxBufferLen += i2cSlaveDataLen;
+                        
+                        // 如果还没有确定期望长度，且缓冲区至少有3个字节（包头+长度字段）
+                        if(i2cExpectedPacketLen == 0 && i2cRxBufferLen >= 3){
+                            // 检查包头
+                            if(i2cRxBuffer[0] == USER_UART_CMD_HEAD){
+                                // 解析数据包长度字段（字节1-2，高字节在前）
+                                uint16_t dataLen = ((uint16_t)i2cRxBuffer[1] << 8) | i2cRxBuffer[2];
+                                // 总长度 = 包头(1) + 长度(2) + 命令(1) + 数据(dataLen) + CRC(2) = 6 + dataLen
+                                i2cExpectedPacketLen = 6 + dataLen;
+                                ESP_LOGI(TAG, "I2C开始接收数据包，数据长度: %d，期望总长度: %d，当前长度: %d", 
+                                         dataLen, i2cExpectedPacketLen, i2cRxBufferLen);
+                            }else{
+                                // 包头错误，重置
+                                ESP_LOGW(TAG, "I2C接收数据包头错误: 0x%02X，重置接收状态", i2cRxBuffer[0]);
+                                i2cRxBufferLen = 0;
+                                i2cExpectedPacketLen = 0;
                             }
-                        }else{
-                            ESP_LOGW(TAG, "I2C接收数据长度超出缓冲区大小: %d", i2cSlaveDataLen);
+                        }
+                        
+                        // 如果已经确定了期望长度，检查数据包是否完整
+                        if(i2cExpectedPacketLen > 0 && i2cRxBufferLen >= i2cExpectedPacketLen){
+                            // 数据包完整，发送到处理队列进行CRC校验
+                            if(i2cDataQueue != NULL){
+                                i2c_received_data_t received_data;
+                                memcpy(received_data.data, i2cRxBuffer, i2cExpectedPacketLen);
+                                received_data.len = i2cExpectedPacketLen;
+                                if(xQueueSend(i2cDataQueue, &received_data, pdMS_TO_TICKS(100)) != pdTRUE){
+                                    ESP_LOGW(TAG, "I2C数据队列已满，丢弃数据包");
+                                }else{
+                                    ESP_LOGI(TAG, "I2C数据包接收完成，长度: %d", i2cExpectedPacketLen);
+                                }
+                            }
+                            
+                            // 如果还有剩余数据，保留在缓冲区（可能是下一个数据包的开头）
+                            if(i2cRxBufferLen > i2cExpectedPacketLen){
+                                uint16_t remaining = i2cRxBufferLen - i2cExpectedPacketLen;
+                                memmove(i2cRxBuffer, i2cRxBuffer + i2cExpectedPacketLen, remaining);
+                                i2cRxBufferLen = remaining;
+                                i2cExpectedPacketLen = 0;  // 重置期望长度，重新解析
+                                
+                                // 检查剩余数据是否包含完整的数据包头部
+                                if(i2cRxBufferLen >= 3 && i2cRxBuffer[0] == USER_UART_CMD_HEAD){
+                                    uint16_t dataLen = ((uint16_t)i2cRxBuffer[1] << 8) | i2cRxBuffer[2];
+                                    // 总长度 = 包头(1) + 长度(2) + 命令(1) + 数据(dataLen) + CRC(2) = 6 + dataLen
+                                    i2cExpectedPacketLen = 6 + dataLen;
+                                    ESP_LOGI(TAG, "I2C检测到下一个数据包，数据长度: %d，期望总长度: %d", 
+                                             dataLen, i2cExpectedPacketLen);
+                                }
+                            }else{
+                                // 数据包处理完成，重置状态
+                                i2cRxBufferLen = 0;
+                                i2cExpectedPacketLen = 0;
+                            }
                         }
                     }
                 }
